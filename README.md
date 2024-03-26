@@ -13,23 +13,26 @@ This is script requires Python 3 and was written exclusively for the Linux platf
 This script is used as follows:
 
 ```
-dependencies.py [-h] --input INPUT [INPUT ...] [--json-format] [--no-indent] [--keep-going]
+python3 dependencies.py [OPTIONS] input [input ...]
+
+positional arguments:
+  input          The input file(s) to be processed
 
 options:
-  -h, --help            show this help message and exit
-  --input INPUT [INPUT ...]
-                        The executable file(s) to be processed
-  --json-format         Generate JSON compatible output
-  --no-indent           Do not indent the generated JSON (requires --json-format)
-  --keep-going          Keep going, even when an error is encountered
+  -h, --help     show this help message and exit
+  --recursive    Recursively analyze shared library dependencies
+  --json-format  Generate JSON compatible output
+  --no-indent    Do not indent the generated JSON (requires --json-format)
+  --no-filter    Do not ignore certain unresolved symbols
+  --keep-going   Keep going, even when an error is encountered
 ```
 
 ## Example
 
-In this example, the dependencies of the `/usr/bin/cp` program are dumped:
+In this example, the dependencies of the `/usr/bin/cp` program are dumped (output was shortened):
 
 ```
-$ ./dependencies.py --input /usr/bin/cp
+$ ./dependencies.py --recursive /usr/bin/cp
 /usr/bin/cp
 	libselinux.so.1 => /lib/x86_64-linux-gnu/libselinux.so.1
 		context_free@LIBSELINUX_1.0
@@ -56,13 +59,46 @@ $ ./dependencies.py --input /usr/bin/cp
 		__ctype_b_loc@GLIBC_2.3
 		__ctype_get_mb_cur_max@GLIBC_2.2.5
 		...
-		utimensat@GLIBC_2.6
-		utimes@GLIBC_2.2.5
+		pcre2_pattern_info_8
+		pcre2_serialize_decode_8
+		pcre2_serialize_get_number_of_codes_8
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6
+		__asprintf_chk@GLIBC_2.8
+		__assert_fail@GLIBC_2.2.5
+		__ctype_b_loc@GLIBC_2.3
+		...
+		umount@GLIBC_2.2.5
+		uname@GLIBC_2.2.5
 		write@GLIBC_2.2.5
 	unresolved symbols:
-		_ITM_deregisterTMCloneTable
-		_ITM_registerTMCloneTable
-		__gmon_start__
+		__tls_get_addr@GLIBC_2.3
+/lib/x86_64-linux-gnu/libacl.so.1
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6
+		__cxa_finalize@GLIBC_2.2.5
+		__errno_location@GLIBC_2.2.5
+		__stack_chk_fail@GLIBC_2.4
+		...
+		strncmp@GLIBC_2.2.5
+		strncpy@GLIBC_2.2.5
+		strtol@GLIBC_2.2.5
+/lib/x86_64-linux-gnu/libattr.so.1
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6
+		__cxa_finalize@GLIBC_2.2.5
+		__errno_location@GLIBC_2.2.5
+		__stack_chk_fail@GLIBC_2.4
+		...
+		strndup@GLIBC_2.2.5
+		strspn@GLIBC_2.2.5
+		syscall@GLIBC_2.2.5
+/lib/x86_64-linux-gnu/libpcre2-8.so.0
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6
+		__ctype_b_loc@GLIBC_2.3
+		__ctype_tolower_loc@GLIBC_2.3
+		__ctype_toupper_loc@GLIBC_2.3
+		...
+		pthread_mutex_unlock@GLIBC_2.2.5
+		strchr@GLIBC_2.2.5
+		sysconf@GLIBC_2.2.5
 ```
 
 ## License

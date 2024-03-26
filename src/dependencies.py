@@ -13,8 +13,13 @@ import sys
 import argparse
 import json
 
+from collections import deque
 from os.path import realpath
 from typing import Set, Dict, List, Tuple
+
+# ============================================================================
+# Constants
+# ============================================================================
 
 # Dictionary keys
 _KEY_DEPENDENCIES = 'dependencies'
@@ -22,6 +27,9 @@ _KEY_FILENAME = 'filename'
 _KEY_PATH = 'path'
 _KEY_SONAME = 'soname'
 _KEY_SYMBOLS = 'symbols'
+
+# Ignored symbol names
+_IGNORED_SYMBOLS = ( '__gmon_start__', '_ITM_deregisterTMCloneTable', '_ITM_registerTMCloneTable' )
 
 # ============================================================================
 # Functions
@@ -42,7 +50,7 @@ def detect_executable(filename: str) -> bool:
     is_executable = False
     regex = re.compile(r'application\s*/\s*x-((pie-)?executable|sharedlib)\s*;\s*charset\s*=\s*binary\s*$')
     try:
-        with start_process(['/usr/bin/file', '-i', filename]) as proc:
+        with start_process(['/usr/bin/file', '-L', '-i', filename]) as proc:
             for line in io.TextIOWrapper(proc.stdout, encoding="utf-8"):
                 match = regex.search(line)
                 if match:
@@ -106,17 +114,17 @@ def detect_symbols(filename: str, defined: bool) -> Set[str]:
 # Process File
 # ============================================================================
 
-def process_file(filename: str) -> Tuple[List[Dict]]:
+def process_file(filename: str, ignore_some: bool) -> Tuple[List[Dict]]:
     if not detect_executable(filename):
         raise ValueError(f"Input file \"{filename}\" is not a supported executable file or shared library!")
 
     dependencies, dependency_paths = detect_dependencies(filename)
     if len(dependencies) < 1:
-        raise ValueError("No shared library dependencies have been found!")
+        return None
 
     imported = detect_symbols(filename, False)
     if len(imported) < 1:
-        raise ValueError("No imported (unresolved) symbols have been found!")
+        return None
 
     result, already_found = [], set()
 
@@ -130,7 +138,10 @@ def process_file(filename: str) -> Tuple[List[Dict]]:
         if len(library_resolved) > 0:
             result.append({ _KEY_SONAME: library, _KEY_PATH: dependency_paths[library], _KEY_SYMBOLS: sorted(library_resolved) })
 
-    unresolved = [name for name in imported if name not in already_found]
+    if ignore_some:
+        already_found.update(_IGNORED_SYMBOLS)
+
+    unresolved = [ name for name in imported if name not in already_found ]
     if len(unresolved) > 0:
         result.append({ _KEY_SONAME: None, _KEY_SYMBOLS: sorted(unresolved) })
 
@@ -146,31 +157,43 @@ def main() -> int:
         return 1
 
     parser = argparse.ArgumentParser(description="Detects all symbols that an executable file (or shared library) imports from other shared libraries.")
-    parser.add_argument('--input', action='store', nargs='+', required=True, help="The executable file(s) to be processed")
+    parser.add_argument('input', action='store', nargs='+', help="The input file(s) to be processed")
+    parser.add_argument('--recursive', action='store_true', default=False, help="Recursively analyze shared library dependencies")
     parser.add_argument('--json-format', action='store_true', default=False, help="Generate JSON compatible output")
     parser.add_argument('--no-indent', action='store_true', default=False, help="Do not indent the generated JSON (requires --json-format)")
+    parser.add_argument('--no-filter', action='store_true', default=False, help="Do not ignore certain unresolved symbols")
     parser.add_argument('--keep-going', action='store_true', default=False, help="Keep going, even when an error is encountered")
 
     args = parser.parse_args()
+
+    if args.no_indent and not args.json_format:
+        print("Option --no-indent is only valid, if option --json-format is enabled too!", file=sys.stderr)
+        return 1
 
     for tool in ['file', 'ldd', 'nm']:
         if not os.access(f'/usr/bin/{tool}', os.R_OK | os.X_OK):
             print(f"Required tool \"/usr/bin/{tool}\" is not available or inaccessible!", file=sys.stderr)
             return 1
 
-    results = []
+    results, completed, pending_files = [], set(), deque()
 
-    for filename in args.input:
+    for input in args.input:
         try:
-            _filename = realpath(filename, strict=True)
+            pending_files.append(realpath(input, strict=True))
         except OSError:
-            print(f"Error: Input file \"{filename}\" could not be found!", file=sys.stderr)
+            print(f"Error: Input file \"{input}\" could not be found!", file=sys.stderr)
             if not args.keep_going:
                 return 1
             continue
 
+    while len(pending_files) > 0:
+        completed.add(filename := pending_files.popleft())
         try:
-            results.append({ _KEY_FILENAME: _filename, _KEY_DEPENDENCIES: process_file(_filename) })
+            result = process_file(filename, not args.no_filter)
+            if result:
+                results.append({ _KEY_FILENAME: filename, _KEY_DEPENDENCIES: result })
+                if args.recursive:
+                    pending_files.extend([ path for path in [ library[_KEY_PATH] for library in result if _KEY_PATH in library ] if path not in completed ])
         except Exception as e:
             print(f"Error: {str(e)}", file=sys.stderr)
             if not args.keep_going:
@@ -180,13 +203,17 @@ def main() -> int:
     if args.json_format:
         json.dump(results[0] if len(results) == 1 else results, sys.stdout, indent=(None if args.no_indent else 3))
     else:
-        for result in results:
-            print(result[_KEY_FILENAME])
-            for library in result[_KEY_DEPENDENCIES]:
-                imported_symbols = library[_KEY_SYMBOLS]
-                print(f"\t{library[_KEY_SONAME]} => {library[_KEY_PATH]}" if library[_KEY_SONAME] else f"\tunresolved symbols:")
-                for symbol in imported_symbols:
-                    print(f"\t\t{symbol}")
+        if len(results) > 0:
+            for result in results:
+                print(result[_KEY_FILENAME])
+                for library in result[_KEY_DEPENDENCIES]:
+                    imported_symbols = library[_KEY_SYMBOLS]
+                    print(f"\t{library[_KEY_SONAME]} => {library[_KEY_PATH]}" if library[_KEY_SONAME] else f"\tunresolved symbols:")
+                    for symbol in imported_symbols:
+                        print(f"\t\t{symbol}")
+        else:
+            print("Sorry, no dependencies have been found!", file=sys.stderr)
+            return 1
     return 0
 
 if __name__ == '__main__':
