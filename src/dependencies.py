@@ -24,12 +24,11 @@ from typing import Set, Dict, List, Tuple
 # Dictionary keys
 _KEY_DEPENDENCIES = 'dependencies'
 _KEY_FILENAME = 'filename'
+_KEY_NAME = 'name'
 _KEY_PATH = 'path'
 _KEY_SONAME = 'soname'
 _KEY_SYMBOLS = 'symbols'
-
-# Ignored symbol names
-_IGNORED_SYMBOLS = ( '__gmon_start__', '_ITM_deregisterTMCloneTable', '_ITM_registerTMCloneTable' )
+_KEY_TYPE = 'type'
 
 # ============================================================================
 # Functions
@@ -87,22 +86,22 @@ def _detect_dependencies(filename: str) -> Tuple[List[str], Dict[str, str]]:
 # Detect all imported/exported symbols
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-def _detect_symbols(filename: str, defined: bool) -> Set[str]:
-    dynamic_symbols = set()
-    regex_line = re.compile(r'^\s*([0-9a-zA-Z]+\s+)?[A-Za-z]\s+([^\s]+)\s*$')
+def _detect_symbols(filename: str, defined: bool) -> Dict[str, str]:
+    dynamic_symbols = {}
+    regex_line = re.compile(r'^\s*([0-9a-zA-Z]+\s+)?([A-Za-z])\s+([^\s]+)\s*$')
     regex_name = re.compile(r'([^@\s]+)@@([^@\s]+)')
     try:
         with _start_process(['/usr/bin/nm', '-D', '--defined-only' if defined else '--undefined-only', filename]) as proc:
             for line in io.TextIOWrapper(proc.stdout, encoding="utf-8"):
                 match = regex_line.search(line)
                 if match:
-                    name = match.group(2)
-                    match = regex_name.search(name) if defined else None
+                    symbol_type, symbol_name = match.group(2), match.group(3)
+                    match = regex_name.search(symbol_name)
                     if match:
-                        dynamic_symbols.add(match.group(1))
-                        dynamic_symbols.add(f"{match.group(1)}@{match.group(2)}")
+                        dynamic_symbols[f"{match.group(1)}@{match.group(2)}"] = symbol_type
+                        dynamic_symbols[match.group(1)] = f"~{symbol_type}"
                     else:
-                        dynamic_symbols.add(name)
+                        dynamic_symbols[symbol_name] = symbol_type
             error_code = proc.wait()
             if error_code != 0:
                 raise ValueError(f"Failed to read symbol table! (error code: {error_code})")
@@ -110,11 +109,18 @@ def _detect_symbols(filename: str, defined: bool) -> Set[str]:
         raise ValueError("Failed to execute \"nm\" program!")
     return dynamic_symbols
 
+# ~~~~~~~~~~~~~~~~~~~~~~~~
+# Check for "weak" symbols
+# ~~~~~~~~~~~~~~~~~~~~~~~~
+
+def _is_weak_symbol(symbol_type: str) -> bool:
+    return (len(symbol_type) > 0) and ("VvWw".find(symbol_type[-1]) >= 0)
+
 # ============================================================================
 # Process File
 # ============================================================================
 
-def process_file(filename: str, ignore_some: bool) -> Tuple[List[Dict]]:
+def process_file(filename: str, ignore_weak: bool) -> Tuple[List[Dict]]:
     if not _detect_executable(filename):
         raise ValueError(f"Input file \"{filename}\" is not a supported executable file or shared library!")
 
@@ -126,26 +132,40 @@ def process_file(filename: str, ignore_some: bool) -> Tuple[List[Dict]]:
     if len(imported) < 1:
         return None
 
-    result, already_found = [], set()
-
+    exported = {}
     for library in dependencies:
-        exported = _detect_symbols(dependency_paths[library], True)
-        library_resolved = set()
-        for symbol in [name for name in exported if name not in already_found]:
-            if symbol in imported:
-                library_resolved.add(symbol)
-                already_found.add(symbol)
-        if len(library_resolved) > 0:
-            result.append({ _KEY_SONAME: library, _KEY_PATH: dependency_paths[library], _KEY_SYMBOLS: sorted(library_resolved) })
+        exported[library] = _detect_symbols(dependency_paths[library], True)
 
-    if ignore_some:
-        already_found.update(_IGNORED_SYMBOLS)
+    library_resolved, already_found = {}, set()
+    for library in dependencies:
+        library_resolved[library] = []
 
-    unresolved = [ name for name in imported if name not in already_found ]
+    for stage in range(3):
+        for library in dependencies:
+            _library_resolved = library_resolved[library]
+            _exported = exported[library]
+            for symbol in [ name for name in _exported if (name not in already_found) and (name in imported) ]:
+                _type = _exported[symbol]
+                if (stage > 1) or (not _type.startswith('~')):
+                    if (stage > 0) or (not _is_weak_symbol(_type)):
+                        _library_resolved.append({ _KEY_NAME: symbol, _KEY_TYPE: _type[-1] })
+                        already_found.add(symbol)
+
+    result_list = []
+    for library in dependencies:
+        _library_resolved = library_resolved[library]
+        if len(_library_resolved) > 0:
+            result_list.append({
+                _KEY_SONAME: library, _KEY_PATH: dependency_paths[library],
+                _KEY_SYMBOLS: sorted(_library_resolved, key=lambda sym: sym[_KEY_NAME]) })
+
+    unresolved = [ { _KEY_NAME: name, _KEY_TYPE: imported[name]} for name in imported if name not in already_found ]
+    if ignore_weak:
+        unresolved = [ symbol for symbol in unresolved if not _is_weak_symbol(symbol[_KEY_TYPE]) ]
     if len(unresolved) > 0:
-        result.append({ _KEY_SONAME: None, _KEY_SYMBOLS: sorted(unresolved) })
+        result_list.append({ _KEY_SONAME: None, _KEY_SYMBOLS: sorted(unresolved, key=lambda sym: sym[_KEY_NAME]) })
 
-    return result
+    return result_list
 
 # ============================================================================
 # MAIN
@@ -161,7 +181,7 @@ def main() -> int:
     parser.add_argument('-r', '--recursive', action='store_true', default=False, help="Recursively analyze shared library dependencies")
     parser.add_argument('-j', '--json-format', action='store_true', default=False, help="Generate JSON compatible output")
     parser.add_argument('--no-indent', action='store_true', default=False, help="Do not indent the generated JSON (requires --json-format)")
-    parser.add_argument('--no-filter', action='store_true', default=False, help="Do not ignore certain unresolved symbols")
+    parser.add_argument('--no-filter', action='store_true', default=False, help="Do not ignore \"weak\" unresolved symbols")
     parser.add_argument('--keep-going', action='store_true', default=False, help="Keep going, even when an error is encountered")
 
     args = parser.parse_args()
@@ -219,9 +239,9 @@ def main() -> int:
                     imported_symbols = library[_KEY_SYMBOLS]
                     print(f"\t{library[_KEY_SONAME]} => {library[_KEY_PATH]}" if library[_KEY_SONAME] else f"\tunresolved symbols:")
                     for symbol in imported_symbols:
-                        print(f"\t\t{symbol}")
+                        print(f"\t\t{symbol[_KEY_NAME]} [{symbol[_KEY_TYPE]}]")
         else:
-            print("Sorry, no dependencies have been found!", file=sys.stderr)
+            print("No dependencies have been found!", file=sys.stderr)
 
     return 0
 
