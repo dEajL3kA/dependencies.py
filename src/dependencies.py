@@ -13,8 +13,8 @@ import sys
 import argparse
 import json
 
+from os.path import abspath, realpath
 from collections import deque
-from os.path import realpath
 from typing import Set, Dict, List, Tuple
 
 # ============================================================================
@@ -39,18 +39,18 @@ _IGNORED_SYMBOLS = ( '__gmon_start__', '_ITM_deregisterTMCloneTable', '_ITM_regi
 # Start sub-process
 # ~~~~~~~~~~~~~~~~~
 
-def start_process(args: List[str]) -> subprocess.Popen:
+def _start_process(args: List[str]) -> subprocess.Popen:
     return subprocess.Popen(args, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdout=subprocess.PIPE, env={'LC_ALL': 'C.UTF-8', 'LANG': 'C.UTF-8'})
 
 # ~~~~~~~~~~~~~~~~~~~~~~
 # Detect executable file
 # ~~~~~~~~~~~~~~~~~~~~~~
 
-def detect_executable(filename: str) -> bool:
+def _detect_executable(filename: str) -> bool:
     is_executable = False
     regex = re.compile(r'application\s*/\s*x-((pie-)?executable|sharedlib)\s*;\s*charset\s*=\s*binary\s*$')
     try:
-        with start_process(['/usr/bin/file', '-L', '-i', filename]) as proc:
+        with _start_process(['/usr/bin/file', '-L', '-i', filename]) as proc:
             for line in io.TextIOWrapper(proc.stdout, encoding="utf-8"):
                 match = regex.search(line)
                 if match:
@@ -64,11 +64,11 @@ def detect_executable(filename: str) -> bool:
 # Detect all dependencies
 # ~~~~~~~~~~~~~~~~~~~~~~~
 
-def detect_dependencies(filename: str) -> Tuple[List[str], Dict[str, str]]:
+def _detect_dependencies(filename: str) -> Tuple[List[str], Dict[str, str]]:
     dependencies, dependency_paths = [], {}
     regex = re.compile(r'^\s*(.+?)\s+=>\s+(.+?)(\s*\(0x[^\)]+\))?\s*$')
     try:
-        with start_process(['/usr/bin/ldd', filename]) as proc:
+        with _start_process(['/usr/bin/ldd', filename]) as proc:
             for line in io.TextIOWrapper(proc.stdout, encoding="utf-8"):
                 match = regex.search(line)
                 if match:
@@ -87,12 +87,12 @@ def detect_dependencies(filename: str) -> Tuple[List[str], Dict[str, str]]:
 # Detect all imported/exported symbols
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-def detect_symbols(filename: str, defined: bool) -> Set[str]:
+def _detect_symbols(filename: str, defined: bool) -> Set[str]:
     dynamic_symbols = set()
     regex_line = re.compile(r'^\s*([0-9a-zA-Z]+\s+)?[A-Za-z]\s+([^\s]+)\s*$')
     regex_name = re.compile(r'([^@\s]+)@@([^@\s]+)')
     try:
-        with start_process(['/usr/bin/nm', '-D', '--defined-only' if defined else '--undefined-only', filename]) as proc:
+        with _start_process(['/usr/bin/nm', '-D', '--defined-only' if defined else '--undefined-only', filename]) as proc:
             for line in io.TextIOWrapper(proc.stdout, encoding="utf-8"):
                 match = regex_line.search(line)
                 if match:
@@ -115,21 +115,21 @@ def detect_symbols(filename: str, defined: bool) -> Set[str]:
 # ============================================================================
 
 def process_file(filename: str, ignore_some: bool) -> Tuple[List[Dict]]:
-    if not detect_executable(filename):
+    if not _detect_executable(filename):
         raise ValueError(f"Input file \"{filename}\" is not a supported executable file or shared library!")
 
-    dependencies, dependency_paths = detect_dependencies(filename)
+    dependencies, dependency_paths = _detect_dependencies(filename)
     if len(dependencies) < 1:
         return None
 
-    imported = detect_symbols(filename, False)
+    imported = _detect_symbols(filename, False)
     if len(imported) < 1:
         return None
 
     result, already_found = [], set()
 
     for library in dependencies:
-        exported = detect_symbols(dependency_paths[library], True)
+        exported = _detect_symbols(dependency_paths[library], True)
         library_resolved = set()
         for symbol in [name for name in exported if name not in already_found]:
             if symbol in imported:
@@ -158,8 +158,8 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="Detects all symbols that an executable file (or shared library) imports from other shared libraries.")
     parser.add_argument('input', action='store', nargs='+', help="The input file(s) to be processed")
-    parser.add_argument('--recursive', action='store_true', default=False, help="Recursively analyze shared library dependencies")
-    parser.add_argument('--json-format', action='store_true', default=False, help="Generate JSON compatible output")
+    parser.add_argument('-r', '--recursive', action='store_true', default=False, help="Recursively analyze shared library dependencies")
+    parser.add_argument('-j', '--json-format', action='store_true', default=False, help="Generate JSON compatible output")
     parser.add_argument('--no-indent', action='store_true', default=False, help="Do not indent the generated JSON (requires --json-format)")
     parser.add_argument('--no-filter', action='store_true', default=False, help="Do not ignore certain unresolved symbols")
     parser.add_argument('--keep-going', action='store_true', default=False, help="Keep going, even when an error is encountered")
@@ -177,17 +177,25 @@ def main() -> int:
 
     results, completed, pending_files = [], set(), deque()
 
-    for input in args.input:
+    for filename in args.input:
         try:
-            pending_files.append(realpath(input, strict=True))
+            filename = realpath(abspath(filename))
+            if not (os.path.isfile(filename) and os.access(filename, os.R_OK)):
+                raise OSError("File not found or access denied!")
+            pending_files.append(filename)
         except OSError:
-            print(f"Error: Input file \"{input}\" could not be found!", file=sys.stderr)
+            print(f"Error: Input file \"{filename}\" could not be found or access denied!", file=sys.stderr)
             if not args.keep_going:
                 return 1
-            continue
+            else:
+                continue
 
-    while len(pending_files) > 0:
-        completed.add(filename := pending_files.popleft())
+    while True:
+        try:
+            filename = pending_files.popleft()
+            completed.add(filename)
+        except IndexError:
+            break
         try:
             result = process_file(filename, not args.no_filter)
             if result:
@@ -198,7 +206,8 @@ def main() -> int:
             print(f"Error: {str(e)}", file=sys.stderr)
             if not args.keep_going:
                 return 1
-            continue
+            else:
+                continue
 
     if args.json_format:
         json.dump(results[0] if len(results) == 1 else results, sys.stdout, indent=(None if args.no_indent else 3))
@@ -213,7 +222,7 @@ def main() -> int:
                         print(f"\t\t{symbol}")
         else:
             print("Sorry, no dependencies have been found!", file=sys.stderr)
-            return 1
+
     return 0
 
 if __name__ == '__main__':

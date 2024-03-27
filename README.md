@@ -16,16 +16,22 @@ This script is used as follows:
 python3 dependencies.py [OPTIONS] input [input ...]
 
 positional arguments:
-  input          The input file(s) to be processed
+  input              The input file(s) to be processed
 
-options:
-  -h, --help     show this help message and exit
-  --recursive    Recursively analyze shared library dependencies
-  --json-format  Generate JSON compatible output
-  --no-indent    Do not indent the generated JSON (requires --json-format)
-  --no-filter    Do not ignore certain unresolved symbols
-  --keep-going   Keep going, even when an error is encountered
+optional arguments:
+  -h, --help         show this help message and exit
+  -r, --recursive    Recursively analyze shared library dependencies
+  -j, --json-format  Generate JSON compatible output
+  --no-indent        Do not indent the generated JSON (requires --json-format)
+  --no-filter        Do not ignore certain unresolved symbols
+  --keep-going       Keep going, even when an error is encountered
 ```
+
+## Output
+
+The first column (no indentation) shows the binary, i.e. executable file or shared library, whose dependencies are being analyzed. The second column (first level of indentation) shows the "soname" and the resolved path of each shared library that the current binary (column #1) depends on. Finally, the third column (second level of indentation) shows the individual symbols that are imported ***by*** the current binary (column #1) ***from*** the current shared library (column #2). Symbols that need to be imported by the binary but that could **not** be traced back to one of the required shared libraries, if any, are shown under the `unresolved symbols` label.
+
+**Note:** By default, only *direct* dependencies are tracked. Use the `--recursive` option to enable *recursive* mode! This will automatically analyze the dependencies of each required shared library that has been found.
 
 ## Example
 
