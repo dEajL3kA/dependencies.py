@@ -65,16 +65,22 @@ def _detect_executable(filename: str) -> bool:
 
 def _detect_dependencies(filename: str) -> Tuple[List[str], Dict[str, str]]:
     dependencies, dependency_paths = [], {}
-    regex = re.compile(r'^\s*(.+?)\s+=>\s+(.+?)(\s*\(0x[^\)]+\))?\s*$')
+    regex = re.compile(r'^\s*([^<>]+?)\s+(=>\s+(.+?))?(\s*\(0x[0-9A-Fa-f]+\))?\s*$')
     try:
         with _start_process(['/usr/bin/ldd', filename]) as proc:
             for line in io.TextIOWrapper(proc.stdout, encoding="utf-8"):
                 match = regex.search(line)
                 if match:
-                    library, path = match.group(1), match.group(2)
-                    if path != "not found":
-                        dependencies.append(library)
-                        dependency_paths[library] = path
+                    library, path = match.group(1), match.group(3)
+                    if path:
+                        if path != "not found":
+                            dependencies.append(library)
+                            dependency_paths[library] = path
+                    else:
+                        if library.startswith("/"):
+                            basename = os.path.basename(library)
+                            dependencies.append(basename)
+                            dependency_paths[basename] = library
             error_code = proc.wait()
             if error_code != 0:
                 raise ValueError(f"Failed to detect dependencies! (error code: {error_code})")
@@ -134,6 +140,8 @@ def process_file(filename: str, ignore_weak: bool) -> Tuple[List[Dict]]:
 
     exported = {}
     for library in dependencies:
+        if not os.access(dependency_paths[library], os.R_OK):
+            raise ValueError(f"Required library \"{dependency_paths[library]}\" not found or access denied!")
         exported[library] = _detect_symbols(dependency_paths[library], True)
 
     library_resolved, already_found = {}, set()
@@ -195,7 +203,7 @@ def main() -> int:
             print(f"Required tool \"/usr/bin/{tool}\" is not available or inaccessible!", file=sys.stderr)
             return 1
 
-    results, completed, pending_files = [], set(), deque()
+    results, files_visited, pending_files = [], set(), deque()
 
     for filename in args.input:
         try:
@@ -210,10 +218,11 @@ def main() -> int:
             else:
                 continue
 
+    files_visited.update(pending_files)
+
     while True:
         try:
             filename = pending_files.popleft()
-            completed.add(filename)
         except IndexError:
             break
         try:
@@ -221,7 +230,8 @@ def main() -> int:
             if result:
                 results.append({ _KEY_FILENAME: filename, _KEY_DEPENDENCIES: result })
                 if args.recursive:
-                    pending_files.extend([ path for path in [ library[_KEY_PATH] for library in result if _KEY_PATH in library ] if path not in completed ])
+                    pending_files.extend([ path for path in [ library[_KEY_PATH] for library in result if _KEY_PATH in library ] if path not in files_visited ])
+                    files_visited.update(pending_files)
         except Exception as e:
             print(f"Error: {str(e)}", file=sys.stderr)
             if not args.keep_going:
