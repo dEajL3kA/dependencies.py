@@ -5,14 +5,15 @@
 # This work has been released under the MIT license. See LICENSE.txt for details! #
 ###################################################################################
 
-import subprocess
-import io
-import re
-import os
-import sys
 import argparse
+import io
 import json
+import os
+import re
+import subprocess
+import sys
 
+from datetime import datetime
 from os.path import isfile, realpath, normpath
 from collections import deque
 from typing import Set, Dict, List, Tuple
@@ -20,6 +21,9 @@ from typing import Set, Dict, List, Tuple
 # ============================================================================
 # Constants
 # ============================================================================
+
+# Version information
+_VERSION = (1, 0, 1711654164)
 
 # Dictionary keys
 _KEY_DEPENDENCIES = 'dependencies'
@@ -190,16 +194,22 @@ def process_file(filename: str, ignore_weak: bool) -> Tuple[List[Dict]]:
 # ============================================================================
 
 def main() -> int:
+    # Check operating system
     if not sys.platform.startswith('linux'):
-        print(f"Sorry, this script must run on the Linux platform!", file=sys.stderr)
+        print(f"Dependencies.py: Sorry, this script must run on the Linux platform!", file=sys.stderr)
         return 1
 
+    # Initialize version string
+    version_string = f"Dependencies.py {_VERSION[0]:d}.{_VERSION[1]:02d} [{datetime.fromtimestamp(_VERSION[2]).date()}]"
+
     # Initialize argument parser
-    parser = argparse.ArgumentParser(description="Detects all symbols that an executable file (or shared library) imports from other shared libraries.")
+    parser = argparse.ArgumentParser(description="Detects all symbols that an executable file (or shared library) imports from other shared libraries.",
+        epilog="Please check \"https://github.com/dEajL3kA/dependencies.py\" for updates!")
     parser.add_argument('input', action='store', nargs='+', help="The input file(s) to be processed")
     parser.add_argument('-r', '--recursive', action='store_true', default=False, help="Recursively analyze shared library dependencies")
     parser.add_argument('-j', '--json-format', action='store_true', default=False, help="Generate JSON compatible output")
     parser.add_argument('-t', '--print-types', action='store_true', default=False, help="Output the type of each resolved symbol")
+    parser.add_argument('-v', '--version', action='version', version=version_string, help="Print the script version")
     parser.add_argument('--no-filter', action='store_true', default=False, help="Do not ignore \"weak\" unresolved symbols")
     parser.add_argument('--no-indent', action='store_true', default=False, help="Do not indent the generated JSON (requires --json-format)")
     parser.add_argument('--keep-going', action='store_true', default=False, help="Keep going, even when an error is encountered")
@@ -245,7 +255,7 @@ def main() -> int:
         try:
             result = process_file(filename, not args.no_filter)
             if result:
-                results.append({ _KEY_FILENAME: filename, _KEY_DEPENDENCIES: result })
+                results.append({ _KEY_FILENAME: filename, _KEY_DEPENDENCIES: result[0] if len(result) == 1 else result })
                 if args.recursive:
                     pending_files.extend([ path for path in [ library[_KEY_PATH] for library in result if _KEY_PATH in library ] if not ((path in pending_files) or (path in files_visited)) ])
         except Exception as e:
@@ -258,7 +268,8 @@ def main() -> int:
     # Eradicate symbol types, if requested
     if not args.print_types:
         for result in results:
-            for library in result[_KEY_DEPENDENCIES]:
+            depslist = result[_KEY_DEPENDENCIES]
+            for library in depslist if isinstance(depslist, list) else [depslist]:
                 library[_KEY_SYMBOLS] = [ symbol[_KEY_NAME] for symbol in library[_KEY_SYMBOLS] ]
 
     # Output the final results
@@ -268,7 +279,8 @@ def main() -> int:
         if len(results) > 0:
             for result in results:
                 print(result[_KEY_FILENAME])
-                for library in result[_KEY_DEPENDENCIES]:
+                depslist = result[_KEY_DEPENDENCIES]
+                for library in depslist if isinstance(depslist, list) else [depslist]:
                     imported_symbols = library[_KEY_SYMBOLS]
                     print(f"\t{library[_KEY_SONAME]} => {library[_KEY_PATH]}" if library[_KEY_SONAME] else f"\tunresolved symbols:")
                     for symbol in imported_symbols:

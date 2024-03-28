@@ -19,10 +19,11 @@ positional arguments:
   input              The input file(s) to be processed
 
 options:
-  -h, --help         Show this help message and exit
+  -h, --help         show this help message and exit
   -r, --recursive    Recursively analyze shared library dependencies
   -j, --json-format  Generate JSON compatible output
   -t, --print-types  Output the type of each resolved symbol
+  -v, --version      Print the script version
   --no-filter        Do not ignore "weak" unresolved symbols
   --no-indent        Do not indent the generated JSON (requires --json-format)
   --keep-going       Keep going, even when an error is encountered
