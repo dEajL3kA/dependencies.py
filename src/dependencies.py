@@ -13,7 +13,7 @@ import sys
 import argparse
 import json
 
-from os.path import abspath, realpath
+from os.path import isfile, realpath, normpath
 from collections import deque
 from typing import Set, Dict, List, Tuple
 
@@ -75,12 +75,11 @@ def _detect_dependencies(filename: str) -> Tuple[List[str], Dict[str, str]]:
                     if path:
                         if path != "not found":
                             dependencies.append(library)
-                            dependency_paths[library] = path
-                    else:
-                        if library.startswith("/"):
-                            basename = os.path.basename(library)
-                            dependencies.append(basename)
-                            dependency_paths[basename] = library
+                            dependency_paths[library] = realpath(normpath(path))
+                    elif library.startswith("/"):
+                        basename = os.path.basename(library)
+                        dependencies.append(basename)
+                        dependency_paths[basename] = realpath(normpath(library))
             error_code = proc.wait()
             if error_code != 0:
                 raise ValueError(f"Failed to detect dependencies! (error code: {error_code})")
@@ -145,7 +144,7 @@ def process_file(filename: str, ignore_weak: bool) -> Tuple[List[Dict]]:
     exported = {}
     for library in dependencies:
         _filename = dependency_paths[library]
-        if not (os.path.isfile(_filename) and os.access(_filename, os.R_OK)):
+        if not (isfile(_filename) and os.access(_filename, os.R_OK)):
             raise ValueError(f"Required library \"{dependency_paths[library]}\" not found or access denied!")
         exported[library] = _detect_symbols(_filename, True)
 
@@ -225,8 +224,8 @@ def main() -> int:
     # Check existence of all given input files
     for filename in args.input:
         try:
-            filename = realpath(abspath(filename))
-            if not (os.path.isfile(filename) and os.access(filename, os.R_OK)):
+            filename = realpath(normpath(filename))
+            if not (isfile(filename) and os.access(filename, os.R_OK)):
                 raise OSError("File not found or access denied!")
             pending_files.append(filename)
         except OSError:
