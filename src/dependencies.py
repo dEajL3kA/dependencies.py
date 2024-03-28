@@ -127,27 +127,34 @@ def _is_weak_symbol(symbol_type: str) -> bool:
 # ============================================================================
 
 def process_file(filename: str, ignore_weak: bool) -> Tuple[List[Dict]]:
+    # Check file type
     if not _detect_executable(filename):
         raise ValueError(f"Input file \"{filename}\" is not a supported executable file or shared library!")
 
+    # Detect dependencies
     dependencies, dependency_paths = _detect_dependencies(filename)
     if len(dependencies) < 1:
         return None
 
+    # Detect imported symbols
     imported = _detect_symbols(filename, False)
     if len(imported) < 1:
         return None
 
+    # Detect exported symbols of each library
     exported = {}
     for library in dependencies:
-        if not os.access(dependency_paths[library], os.R_OK):
+        _filename = dependency_paths[library]
+        if not (os.path.isfile(_filename) and os.access(_filename, os.R_OK)):
             raise ValueError(f"Required library \"{dependency_paths[library]}\" not found or access denied!")
-        exported[library] = _detect_symbols(dependency_paths[library], True)
+        exported[library] = _detect_symbols(_filename, True)
 
+    # Initialize buffers
     library_resolved, already_found = {}, set()
     for library in dependencies:
         library_resolved[library] = []
 
+    # Determine which symbols are imported from each library
     for stage in range(3):
         for library in dependencies:
             _library_resolved = library_resolved[library]
@@ -158,7 +165,10 @@ def process_file(filename: str, ignore_weak: bool) -> Tuple[List[Dict]]:
                     if (stage > 0) or (not _is_weak_symbol(_type)):
                         _library_resolved.append({ _KEY_NAME: symbol, _KEY_TYPE: _type[-1] })
                         already_found.add(symbol)
+        if not any(symbol not in already_found for symbol in imported):
+            break
 
+    # Build the result data
     result_list = []
     for library in dependencies:
         _library_resolved = library_resolved[library]
@@ -167,6 +177,7 @@ def process_file(filename: str, ignore_weak: bool) -> Tuple[List[Dict]]:
                 _KEY_SONAME: library, _KEY_PATH: dependency_paths[library],
                 _KEY_SYMBOLS: sorted(_library_resolved, key=lambda sym: sym[_KEY_NAME]) })
 
+    # Check for unresolved symbols
     unresolved = [ { _KEY_NAME: name, _KEY_TYPE: imported[name]} for name in imported if name not in already_found ]
     if ignore_weak:
         unresolved = [ symbol for symbol in unresolved if not _is_weak_symbol(symbol[_KEY_TYPE]) ]
@@ -184,27 +195,34 @@ def main() -> int:
         print(f"Sorry, this script must run on the Linux platform!", file=sys.stderr)
         return 1
 
+    # Initialize argument parser
     parser = argparse.ArgumentParser(description="Detects all symbols that an executable file (or shared library) imports from other shared libraries.")
     parser.add_argument('input', action='store', nargs='+', help="The input file(s) to be processed")
     parser.add_argument('-r', '--recursive', action='store_true', default=False, help="Recursively analyze shared library dependencies")
     parser.add_argument('-j', '--json-format', action='store_true', default=False, help="Generate JSON compatible output")
-    parser.add_argument('--no-indent', action='store_true', default=False, help="Do not indent the generated JSON (requires --json-format)")
+    parser.add_argument('-t', '--print-types', action='store_true', default=False, help="Output the type of each resolved symbol")
     parser.add_argument('--no-filter', action='store_true', default=False, help="Do not ignore \"weak\" unresolved symbols")
+    parser.add_argument('--no-indent', action='store_true', default=False, help="Do not indent the generated JSON (requires --json-format)")
     parser.add_argument('--keep-going', action='store_true', default=False, help="Keep going, even when an error is encountered")
 
+    # Parse arguments
     args = parser.parse_args()
 
+    # Check arguments
     if args.no_indent and not args.json_format:
         print("Option --no-indent is only valid, if option --json-format is enabled too!", file=sys.stderr)
         return 1
 
+    # Check required tool
     for tool in ['file', 'ldd', 'nm']:
         if not os.access(f'/usr/bin/{tool}', os.R_OK | os.X_OK):
             print(f"Required tool \"/usr/bin/{tool}\" is not available or inaccessible!", file=sys.stderr)
             return 1
 
+    # Initialize buffers
     results, files_visited, pending_files = [], set(), deque()
 
+    # Check existence of all given input files
     for filename in args.input:
         try:
             filename = realpath(abspath(filename))
@@ -218,20 +236,19 @@ def main() -> int:
             else:
                 continue
 
-    files_visited.update(pending_files)
-
+    # Process all pending files
     while True:
         try:
             filename = pending_files.popleft()
         except IndexError:
             break
+        files_visited.add(filename)
         try:
             result = process_file(filename, not args.no_filter)
             if result:
                 results.append({ _KEY_FILENAME: filename, _KEY_DEPENDENCIES: result })
                 if args.recursive:
-                    pending_files.extend([ path for path in [ library[_KEY_PATH] for library in result if _KEY_PATH in library ] if path not in files_visited ])
-                    files_visited.update(pending_files)
+                    pending_files.extend([ path for path in [ library[_KEY_PATH] for library in result if _KEY_PATH in library ] if not ((path in pending_files) or (path in files_visited)) ])
         except Exception as e:
             print(f"Error: {str(e)}", file=sys.stderr)
             if not args.keep_going:
@@ -239,6 +256,13 @@ def main() -> int:
             else:
                 continue
 
+    # Eradicate symbol types, if requested
+    if not args.print_types:
+        for result in results:
+            for library in result[_KEY_DEPENDENCIES]:
+                library[_KEY_SYMBOLS] = [ symbol[_KEY_NAME] for symbol in library[_KEY_SYMBOLS] ]
+
+    # Output the final results
     if args.json_format:
         json.dump(results[0] if len(results) == 1 else results, sys.stdout, indent=(None if args.no_indent else 3))
     else:
@@ -249,7 +273,7 @@ def main() -> int:
                     imported_symbols = library[_KEY_SYMBOLS]
                     print(f"\t{library[_KEY_SONAME]} => {library[_KEY_PATH]}" if library[_KEY_SONAME] else f"\tunresolved symbols:")
                     for symbol in imported_symbols:
-                        print(f"\t\t{symbol[_KEY_NAME]} [{symbol[_KEY_TYPE]}]")
+                        print(f"\t\t{symbol[_KEY_NAME]} [{symbol[_KEY_TYPE]}]" if isinstance(symbol, dict) else f"\t\t{symbol}")
         else:
             print("No dependencies have been found!", file=sys.stderr)
 
