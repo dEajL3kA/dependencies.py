@@ -6,7 +6,7 @@ Unlike tools like **`ldd`** or **`nm`** alone, this script tries to track which 
 
 ## Platform support
 
-This is script requires Python 3 and was written exclusively for the Linux platform. No non-standard Python packages are required. It is assumed that the Linux command-line tools **`file`**, **`ldd`** and **`nm`** are available.
+This is script requires Python 3.7+ and was written for Linux and ✱BSD platforms. No non-standard Python packages are required. It is assumed that the standard command-line tools **`file`**, **`ldd`** and **`nm`** are available.
 
 ## Usage
 

@@ -51,7 +51,7 @@ def _start_process(args: List[str]) -> subprocess.Popen:
 
 def _detect_executable(filename: str) -> bool:
     is_executable = False
-    regex = re.compile(r'application\s*/\s*x-((pie-)?executable|sharedlib)\s*;\s*charset\s*=\s*binary\s*$')
+    regex = re.compile(r'application\s*/\s*x-((pie-)?executable|sharedlib)\s*(;\s*charset\s*=\s*binary\s*)?$')
     try:
         with _start_process(['/usr/bin/file', '-L', '-i', filename]) as proc:
             for line in io.TextIOWrapper(proc.stdout, encoding="utf-8"):
@@ -68,22 +68,31 @@ def _detect_executable(filename: str) -> bool:
 # ~~~~~~~~~~~~~~~~~~~~~~~
 
 def _detect_dependencies(filename: str) -> Tuple[List[str], Dict[str, str]]:
-    dependencies, dependency_paths = [], {}
-    regex = re.compile(r'^\s*([^<>]+?)\s+(=>\s+(.+?))?(\s*\(0x[0-9A-Fa-f]+\))?\s*$')
+    dependencies, dependency_paths, openbsd_compat = [], {}, sys.platform.startswith('openbsd')
+    regex = re.compile(
+        r'^\s+([0-9A-Fa-f]+\s+){2}(exe|rlib|dlib|ld\.so)\s+(\d+\s+){3}(.+?)\s*$' if openbsd_compat else
+        r'^\s+([^<>]+?)\s+(=>\s+(.+?))?(\s*\(0x[0-9A-Fa-f]+\))?\s*$')
     try:
         with _start_process(['/usr/bin/ldd', filename]) as proc:
             for line in io.TextIOWrapper(proc.stdout, encoding="utf-8"):
                 match = regex.search(line)
                 if match:
-                    library, path = match.group(1), match.group(3)
-                    if path:
-                        if path != "not found":
-                            dependencies.append(library)
-                            dependency_paths[library] = realpath(normpath(path))
-                    elif library.startswith("/"):
-                        basename = os.path.basename(library)
-                        dependencies.append(basename)
-                        dependency_paths[basename] = realpath(normpath(library))
+                    if openbsd_compat:
+                        type, library = match.group(2), match.group(4)
+                        if type != "exe":
+                            basename = os.path.basename(library)
+                            dependencies.append(basename)
+                            dependency_paths[basename] = realpath(normpath(library))
+                    else:
+                        library, path = match.group(1), match.group(3)
+                        if path:
+                            if path != "not found":
+                                dependencies.append(library)
+                                dependency_paths[library] = realpath(normpath(path))
+                        elif library.startswith("/"):
+                            basename = os.path.basename(library)
+                            dependencies.append(basename)
+                            dependency_paths[basename] = realpath(normpath(library))
             error_code = proc.wait()
             if error_code != 0:
                 raise ValueError(f"Failed to detect dependencies! (error code: {error_code})")
@@ -100,17 +109,18 @@ def _detect_symbols(filename: str, defined: bool) -> Dict[str, str]:
     regex_line = re.compile(r'^\s*([0-9a-zA-Z]+\s+)?([A-Za-z])\s+([^\s]+)\s*$')
     regex_name = re.compile(r'([^@\s]+)@@([^@\s]+)')
     try:
-        with _start_process(['/usr/bin/nm', '-D', '--defined-only' if defined else '--undefined-only', filename]) as proc:
+        with _start_process(['/usr/bin/nm', '-D', filename]) as proc:
             for line in io.TextIOWrapper(proc.stdout, encoding="utf-8"):
                 match = regex_line.search(line)
                 if match:
-                    symbol_type, symbol_name = match.group(2), match.group(3)
-                    match = regex_name.search(symbol_name)
-                    if match:
-                        dynamic_symbols[f"{match.group(1)}@{match.group(2)}"] = symbol_type
-                        dynamic_symbols[match.group(1)] = f"~{symbol_type}"
-                    else:
-                        dynamic_symbols[symbol_name] = symbol_type
+                    address, symbol_type, symbol_name = match.group(1), match.group(2), match.group(3)
+                    if (address and defined) or (not (address or defined)):
+                        match = regex_name.search(symbol_name)
+                        if match:
+                            dynamic_symbols[f"{match.group(1)}@{match.group(2)}"] = symbol_type
+                            dynamic_symbols[match.group(1)] = f"~{symbol_type}"
+                        else:
+                            dynamic_symbols[symbol_name] = symbol_type
             error_code = proc.wait()
             if error_code != 0:
                 raise ValueError(f"Failed to read symbol table! (error code: {error_code})")
@@ -195,8 +205,8 @@ def process_file(filename: str, ignore_weak: bool) -> Tuple[List[Dict]]:
 
 def main() -> int:
     # Check operating system
-    if not sys.platform.startswith('linux'):
-        print(f"Dependencies.py: Sorry, this script must run on the Linux platform!", file=sys.stderr)
+    if not re.search(r'^(linux|(free|open|net)bsd)', sys.platform, re.A | re.I):
+        print(f"Dependencies.py: Sorry, this script must run on the Linux or *BSD platform! [{sys.platform}]", file=sys.stderr)
         return 1
 
     # Initialize version string
