@@ -14,16 +14,17 @@ import subprocess
 import sys
 
 from datetime import datetime
+from copy import deepcopy
 from os.path import isfile, realpath, normpath
 from collections import deque
-from typing import Set, Dict, List, Tuple
+from typing import Dict, List, Tuple, Callable, Any
 
 # ============================================================================
 # Constants
 # ============================================================================
 
 # Version information
-_VERSION = (1, 0, 1711654164)
+_VERSION = (1, 1, 1711923079)
 
 # Dictionary keys
 _KEY_DEPENDENCIES = 'dependencies'
@@ -38,12 +39,13 @@ _KEY_TYPE = 'type'
 # Functions
 # ============================================================================
 
-# ~~~~~~~~~~~~~~~~~
-# Start sub-process
-# ~~~~~~~~~~~~~~~~~
-
 def _start_process(args: List[str]) -> subprocess.Popen:
     return subprocess.Popen(args, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdout=subprocess.PIPE, env={'LC_ALL': 'C.UTF-8', 'LANG': 'C.UTF-8'})
+
+def _lazy_compute(cache: Dict, category: str, key: str, factory: Callable[[str], Any]) -> Any:
+    cache_entry = json.dumps({ 'category': category, 'name': key }, sort_keys=True, separators=(',', ':'))
+    value = cache.get(cache_entry, NotImplemented)
+    return deepcopy(value if value is not NotImplemented else cache.setdefault(cache_entry, factory(key)))
 
 # ~~~~~~~~~~~~~~~~~~~~~~
 # Detect executable file
@@ -139,18 +141,18 @@ def _is_weak_symbol(symbol_type: str) -> bool:
 # Process File
 # ============================================================================
 
-def process_file(filename: str, ignore_weak: bool) -> Tuple[List[Dict]]:
+def process_file(filename: str, ignore_weak: bool, cache: Dict = {}) -> Tuple[List[Dict]]:
     # Check file type
     if not _detect_executable(filename):
         raise ValueError(f"Input file \"{filename}\" is not a supported executable file or shared library!")
 
     # Detect dependencies
-    dependencies, dependency_paths = _detect_dependencies(filename)
+    dependencies, dependency_paths = _lazy_compute(cache, 'dep', filename, lambda _key: _detect_dependencies(_key))
     if len(dependencies) < 1:
         return None
 
     # Detect imported symbols
-    imported = _detect_symbols(filename, False)
+    imported = _lazy_compute(cache, 'imp', filename, lambda _key: _detect_symbols(_key, False))
     if len(imported) < 1:
         return None
 
@@ -159,8 +161,8 @@ def process_file(filename: str, ignore_weak: bool) -> Tuple[List[Dict]]:
     for library in dependencies:
         _filename = dependency_paths[library]
         if not (isfile(_filename) and os.access(_filename, os.R_OK)):
-            raise ValueError(f"Required library \"{dependency_paths[library]}\" not found or access denied!")
-        exported[library] = _detect_symbols(_filename, True)
+            raise ValueError(f"Required shared library \"{dependency_paths[library]}\" not found or access denied!")
+        exported[library] = _lazy_compute(cache, 'exp', _filename, lambda _key: _detect_symbols(_key, True))
 
     # Initialize buffers
     library_resolved, already_found = {}, set()
@@ -239,7 +241,7 @@ def main() -> int:
             return 1
 
     # Initialize buffers
-    results, files_visited, pending_files = [], set(), deque()
+    results, files_visited, pending_files, cache = [], set(), deque(), {}
 
     # Check existence of all given input files
     for filename in args.input:
@@ -263,7 +265,7 @@ def main() -> int:
             break
         files_visited.add(filename)
         try:
-            result = process_file(filename, not args.no_filter)
+            result = process_file(filename, not args.no_filter, cache)
             if result:
                 results.append({ _KEY_FILENAME: filename, _KEY_DEPENDENCIES: result[0] if len(result) == 1 else result })
                 if args.recursive:
