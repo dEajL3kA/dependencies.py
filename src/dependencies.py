@@ -109,6 +109,7 @@ def _detect_dependencies(filename: str) -> Dict[str, str]:
 def _detect_symbols(filename: str, get_defined: bool) -> Dict[str, str]:
     dynamic_symbols = {}
     regex_line = re.compile(r'^\s*([0-9a-fA-F]+\s+)?([A-Za-z])\s+([^\s]+)\s*$')
+    regex_zero = re.compile(r'^0+$')
     regex_name = re.compile(r'([^@\s]+)@@([^@\s]+)')
     try:
         with _start_process(['/usr/bin/nm', '-D', '-p', filename]) as proc:
@@ -116,7 +117,7 @@ def _detect_symbols(filename: str, get_defined: bool) -> Dict[str, str]:
                 match = regex_line.search(line)
                 if match:
                     address, symbol_type, symbol_name = match.group(1), match.group(2), match.group(3)
-                    is_defined = address and (symbol_type != 'U')
+                    is_defined = address and (not regex_zero.search(address)) and (symbol_type != 'U')
                     if (is_defined if get_defined else (not is_defined)):
                         match = regex_name.search(symbol_name)
                         if match:
@@ -198,14 +199,14 @@ def process_file(filename: str, ignore_weak: bool, cache: Dict[str, Any] = {}, p
 
 def main() -> int:
     # Check python version
-    if  (sys.version_info[0] * 1000) + sys.version_info[1] < 3007:
-        print("This script requires Python version 3.7 or later!", file=sys.stderr)
+    if  (sys.version_info[0] << 8) + sys.version_info[1] < 0x307:
+        print("Dependencies.py: Sorry, this script requires Python version 3.7 or later!", file=sys.stderr)
         return 1
 
     # Check operating system
     if not re.search(r'^(linux|(free|open|net)bsd)|sunos', sys.platform, re.A | re.I):
         print(f"Dependencies.py: Sorry, this script must run on the Linux or *BSD platform! [{sys.platform}]", file=sys.stderr)
-        #return 1
+        return 1
 
     # Initialize version string
     version_string = f"Dependencies.py {_VERSION[0]:d}.{_VERSION[1]:02d} [{datetime.fromtimestamp(_VERSION[2]).date()}]"
@@ -220,16 +221,11 @@ def main() -> int:
     parser.add_argument('-v', '--version', action='version', version=version_string, help="Print the script version")
     parser.add_argument('--no-preload', action='store_true', default=False, help="Ignore pre-loaded libraries (only relevant with --recursive)")
     parser.add_argument('--no-filter', action='store_true', default=False, help="Do not ignore \"weak\" unresolved symbols")
-    parser.add_argument('--no-indent', action='store_true', default=False, help="Do not indent the generated JSON (requires --json-format)")
     parser.add_argument('--keep-going', action='store_true', default=False, help="Keep going, even when an error is encountered")
+    parser.add_argument('--indent', type=int, default=3, help="Set number of spaces to use for indentation (default: 3)")
 
     # Parse arguments
     args = parser.parse_args()
-
-    # Check arguments
-    if args.no_indent and not args.json_format:
-        print("Option --no-indent is only valid, if option --json-format is enabled too!", file=sys.stderr)
-        return 1
 
     # Check required tool
     for tool in ['file', 'ldd', 'nm']:
@@ -285,17 +281,18 @@ def main() -> int:
 
     # Output the final results
     if args.json_format:
-        json.dump(results[0] if len(results) == 1 else results, sys.stdout, indent=(None if args.no_indent else 3))
+        json.dump(results[0] if len(results) == 1 else results, sys.stdout, indent=(args.indent if args.indent > 0 else None))
     else:
         if len(results) > 0:
+            indent_chars = ('\x20' * args.indent, '\x20' * (2 * args.indent)) if args.indent > 0 else ('\t', '\t\t')
             for result in results:
                 print(result[_KEY_FILENAME])
                 depslist = result[_KEY_DEPENDENCIES]
                 for library in depslist if isinstance(depslist, list) else [depslist]:
                     imported_symbols = library[_KEY_SYMBOLS]
-                    print(f"\t{library[_KEY_SONAME]} => {library[_KEY_PATH]}" if library[_KEY_SONAME] else f"\tunresolved symbols:")
+                    print(f"{indent_chars[0]}{library[_KEY_SONAME]} => {library[_KEY_PATH]}" if library[_KEY_SONAME] else f"{indent_chars[0]}unresolved symbols:")
                     for symbol in imported_symbols:
-                        print(f"\t\t{symbol[_KEY_NAME]} [{symbol[_KEY_TYPE]}]" if isinstance(symbol, dict) else f"\t\t{symbol}")
+                        print(f"{indent_chars[1]}{symbol[_KEY_NAME]} [{symbol[_KEY_TYPE]}]" if isinstance(symbol, dict) else f"{indent_chars[1]}{symbol}")
         else:
             print("No dependencies have been found!", file=sys.stderr)
 
