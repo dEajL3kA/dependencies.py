@@ -17,14 +17,14 @@ from datetime import datetime
 from copy import deepcopy
 from os.path import isfile, realpath, normpath
 from collections import deque
-from typing import Dict, List, Tuple, Callable, Any
+from typing import Dict, List, Callable, Optional, Any
 
 # ============================================================================
 # Constants
 # ============================================================================
 
 # Version information
-_VERSION = (1, 1, 1711923079)
+_VERSION = (1, 2, 1712059272)
 
 # Dictionary keys
 _KEY_DEPENDENCIES = 'dependencies'
@@ -47,15 +47,18 @@ def _lazy_compute(cache: Dict, category: str, key: str, factory: Callable[[str],
     value = cache.get(cache_entry, NotImplemented)
     return deepcopy(value if value is not NotImplemented else cache.setdefault(cache_entry, factory(key)))
 
+def _is_weak_symbol(symbol_type: str) -> bool:
+    return (len(symbol_type) > 0) and ("VvWw".find(symbol_type[-1]) >= 0)
+
 # ~~~~~~~~~~~~~~~~~~~~~~
 # Detect executable file
 # ~~~~~~~~~~~~~~~~~~~~~~
 
 def _detect_executable(filename: str) -> bool:
     is_executable = False
-    regex = re.compile(r'application\s*/\s*x-((pie-)?executable|sharedlib)\s*(;\s*charset\s*=\s*binary\s*)?$')
+    regex = re.compile(r'^([^:]+:)?\s*ELF(\s|,|$)', re.I)
     try:
-        with _start_process(['/usr/bin/file', '-L', '-i', filename]) as proc:
+        with _start_process(['/usr/bin/file', filename]) as proc:
             for line in io.TextIOWrapper(proc.stdout, encoding="utf-8"):
                 match = regex.search(line)
                 if match:
@@ -69,8 +72,8 @@ def _detect_executable(filename: str) -> bool:
 # Detect all dependencies
 # ~~~~~~~~~~~~~~~~~~~~~~~
 
-def _detect_dependencies(filename: str) -> Tuple[List[str], Dict[str, str]]:
-    dependencies, dependency_paths, openbsd_compat = [], {}, sys.platform.startswith('openbsd')
+def _detect_dependencies(filename: str) -> Dict[str, str]:
+    dependencies, openbsd_compat = {}, sys.platform.startswith('openbsd')
     regex = re.compile(
         r'^\s+([0-9A-Fa-f]+\s+){2}(exe|rlib|dlib|ld\.so)\s+(\d+\s+){3}(.+?)\s*$' if openbsd_compat else
         r'^\s+([^<>]+?)\s+(=>\s+(.+?))?(\s*\(0x[0-9A-Fa-f]+\))?\s*$')
@@ -83,40 +86,38 @@ def _detect_dependencies(filename: str) -> Tuple[List[str], Dict[str, str]]:
                         type, library = match.group(2), match.group(4)
                         if type != "exe":
                             basename = os.path.basename(library)
-                            dependencies.append(basename)
-                            dependency_paths[basename] = realpath(normpath(library))
+                            dependencies[basename] = realpath(normpath(library))
                     else:
                         library, path = match.group(1), match.group(3)
                         if path:
                             if path != "not found":
-                                dependencies.append(library)
-                                dependency_paths[library] = realpath(normpath(path))
+                                dependencies[library] = realpath(normpath(path))
                         elif library.startswith("/"):
                             basename = os.path.basename(library)
-                            dependencies.append(basename)
-                            dependency_paths[basename] = realpath(normpath(library))
+                            dependencies[basename] = realpath(normpath(library))
             error_code = proc.wait()
             if error_code != 0:
                 raise ValueError(f"Failed to detect dependencies! (error code: {error_code})")
     except OSError:
         raise ValueError("Failed to execute \"ldd\" program!")
-    return (dependencies, dependency_paths)
+    return dependencies
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Detect all imported/exported symbols
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-def _detect_symbols(filename: str, defined: bool) -> Dict[str, str]:
+def _detect_symbols(filename: str, get_defined: bool) -> Dict[str, str]:
     dynamic_symbols = {}
-    regex_line = re.compile(r'^\s*([0-9a-zA-Z]+\s+)?([A-Za-z])\s+([^\s]+)\s*$')
+    regex_line = re.compile(r'^\s*([0-9a-fA-F]+\s+)?([A-Za-z])\s+([^\s]+)\s*$')
     regex_name = re.compile(r'([^@\s]+)@@([^@\s]+)')
     try:
-        with _start_process(['/usr/bin/nm', '-D', filename]) as proc:
+        with _start_process(['/usr/bin/nm', '-D', '-p', filename]) as proc:
             for line in io.TextIOWrapper(proc.stdout, encoding="utf-8"):
                 match = regex_line.search(line)
                 if match:
                     address, symbol_type, symbol_name = match.group(1), match.group(2), match.group(3)
-                    if (address and defined) or (not (address or defined)):
+                    is_defined = address and (symbol_type != 'U')
+                    if (is_defined if get_defined else (not is_defined)):
                         match = regex_name.search(symbol_name)
                         if match:
                             dynamic_symbols[f"{match.group(1)}@{match.group(2)}"] = symbol_type
@@ -130,26 +131,18 @@ def _detect_symbols(filename: str, defined: bool) -> Dict[str, str]:
         raise ValueError("Failed to execute \"nm\" program!")
     return dynamic_symbols
 
-# ~~~~~~~~~~~~~~~~~~~~~~~~
-# Check for "weak" symbols
-# ~~~~~~~~~~~~~~~~~~~~~~~~
-
-def _is_weak_symbol(symbol_type: str) -> bool:
-    return (len(symbol_type) > 0) and ("VvWw".find(symbol_type[-1]) >= 0)
-
 # ============================================================================
 # Process File
 # ============================================================================
 
-def process_file(filename: str, ignore_weak: bool, cache: Dict = {}) -> Tuple[List[Dict]]:
+def process_file(filename: str, ignore_weak: bool, cache: Dict[str, Any] = {}, preloaded: Optional[Dict[str, str]] = None) -> Optional[List[Dict]]:
     # Check file type
     if not _detect_executable(filename):
         raise ValueError(f"Input file \"{filename}\" is not a supported executable file or shared library!")
 
     # Detect dependencies
-    dependencies, dependency_paths = _lazy_compute(cache, 'dep', filename, lambda _key: _detect_dependencies(_key))
-    if len(dependencies) < 1:
-        return None
+    dependencies = deepcopy(preloaded) if preloaded is not None else {}
+    dependencies.update(_lazy_compute(cache, 'dep', filename, lambda _key: _detect_dependencies(_key)))
 
     # Detect imported symbols
     imported = _lazy_compute(cache, 'imp', filename, lambda _key: _detect_symbols(_key, False))
@@ -159,9 +152,9 @@ def process_file(filename: str, ignore_weak: bool, cache: Dict = {}) -> Tuple[Li
     # Detect exported symbols of each library
     exported = {}
     for library in dependencies:
-        _filename = dependency_paths[library]
+        _filename = dependencies[library]
         if not (isfile(_filename) and os.access(_filename, os.R_OK)):
-            raise ValueError(f"Required shared library \"{dependency_paths[library]}\" not found or access denied!")
+            raise ValueError(f"Required library \"{_filename}\" not found or access denied!")
         exported[library] = _lazy_compute(cache, 'exp', _filename, lambda _key: _detect_symbols(_key, True))
 
     # Initialize buffers
@@ -188,9 +181,7 @@ def process_file(filename: str, ignore_weak: bool, cache: Dict = {}) -> Tuple[Li
     for library in dependencies:
         _library_resolved = library_resolved[library]
         if len(_library_resolved) > 0:
-            result_list.append({
-                _KEY_SONAME: library, _KEY_PATH: dependency_paths[library],
-                _KEY_SYMBOLS: sorted(_library_resolved, key=lambda sym: sym[_KEY_NAME]) })
+            result_list.append({ _KEY_SONAME: library, _KEY_PATH: dependencies[library], _KEY_SYMBOLS: sorted(_library_resolved, key=lambda sym: sym[_KEY_NAME]) })
 
     # Check for unresolved symbols
     unresolved = [ { _KEY_NAME: name, _KEY_TYPE: imported[name]} for name in imported if name not in already_found ]
@@ -206,10 +197,15 @@ def process_file(filename: str, ignore_weak: bool, cache: Dict = {}) -> Tuple[Li
 # ============================================================================
 
 def main() -> int:
-    # Check operating system
-    if not re.search(r'^(linux|(free|open|net)bsd)', sys.platform, re.A | re.I):
-        print(f"Dependencies.py: Sorry, this script must run on the Linux or *BSD platform! [{sys.platform}]", file=sys.stderr)
+    # Check python version
+    if  (sys.version_info[0] * 1000) + sys.version_info[1] < 3007:
+        print("This script requires Python version 3.7 or later!", file=sys.stderr)
         return 1
+
+    # Check operating system
+    if not re.search(r'^(linux|(free|open|net)bsd)|sunos', sys.platform, re.A | re.I):
+        print(f"Dependencies.py: Sorry, this script must run on the Linux or *BSD platform! [{sys.platform}]", file=sys.stderr)
+        #return 1
 
     # Initialize version string
     version_string = f"Dependencies.py {_VERSION[0]:d}.{_VERSION[1]:02d} [{datetime.fromtimestamp(_VERSION[2]).date()}]"
@@ -222,6 +218,7 @@ def main() -> int:
     parser.add_argument('-j', '--json-format', action='store_true', default=False, help="Generate JSON compatible output")
     parser.add_argument('-t', '--print-types', action='store_true', default=False, help="Output the type of each resolved symbol")
     parser.add_argument('-v', '--version', action='version', version=version_string, help="Print the script version")
+    parser.add_argument('--no-preload', action='store_true', default=False, help="Ignore pre-loaded libraries (only relevant with --recursive)")
     parser.add_argument('--no-filter', action='store_true', default=False, help="Do not ignore \"weak\" unresolved symbols")
     parser.add_argument('--no-indent', action='store_true', default=False, help="Do not indent the generated JSON (requires --json-format)")
     parser.add_argument('--keep-going', action='store_true', default=False, help="Keep going, even when an error is encountered")
@@ -249,7 +246,7 @@ def main() -> int:
             filename = realpath(normpath(filename))
             if not (isfile(filename) and os.access(filename, os.R_OK)):
                 raise OSError("File not found or access denied!")
-            pending_files.append(filename)
+            pending_files.append((filename, None))
         except OSError:
             print(f"Error: Input file \"{filename}\" could not be found or access denied!", file=sys.stderr)
             if not args.keep_going:
@@ -260,16 +257,18 @@ def main() -> int:
     # Process all pending files
     while True:
         try:
-            filename = pending_files.popleft()
+            filename, preloaded = pending_files.popleft()
         except IndexError:
             break
         files_visited.add(filename)
         try:
-            result = process_file(filename, not args.no_filter, cache)
+            result = process_file(filename, not args.no_filter, cache, preloaded)
             if result:
                 results.append({ _KEY_FILENAME: filename, _KEY_DEPENDENCIES: result[0] if len(result) == 1 else result })
                 if args.recursive:
-                    pending_files.extend([ path for path in [ library[_KEY_PATH] for library in result if _KEY_PATH in library ] if not ((path in pending_files) or (path in files_visited)) ])
+                    _preloaded = { _library[_KEY_SONAME]: _library[_KEY_PATH] for _library in result if _KEY_PATH in _library } if not args.no_preload else None
+                    pending_files.extend([ (path, _preloaded) for path in
+                        [ library[_KEY_PATH] for library in result if _KEY_PATH in library ] if not ((path in pending_files) or (path in files_visited)) ])
         except Exception as e:
             print(f"Error: {str(e)}", file=sys.stderr)
             if not args.keep_going:

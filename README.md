@@ -15,7 +15,7 @@ This script is used as follows:
 ```
 python3 /path/to/dependencies.py [OPTIONS] input [input ...]
 
-positional arguments:
+ositional arguments:
   input              The input file(s) to be processed
 
 options:
@@ -24,6 +24,7 @@ options:
   -j, --json-format  Generate JSON compatible output
   -t, --print-types  Output the type of each resolved symbol
   -v, --version      Print the script version
+  --no-preload       Ignore pre-loaded libraries (only relevant with --recursive)
   --no-filter        Do not ignore "weak" unresolved symbols
   --no-indent        Do not indent the generated JSON (requires --json-format)
   --keep-going       Keep going, even when an error is encountered
