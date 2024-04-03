@@ -47,6 +47,12 @@ def _lazy_compute(cache: Dict, category: str, key: str, factory: Callable[[str],
     value = cache.get(cache_entry, NotImplemented)
     return deepcopy(value if value is not NotImplemented else cache.setdefault(cache_entry, factory(key)))
 
+def _merge_dict(first: Optional[dict], second: Optional[dict]) -> dict:
+    merged = deepcopy(first) if first is not None else {}
+    if second is not None:
+        merged.update({ _key: _value for _key, _value in second.items() if _key not in merged })
+    return merged
+
 def _is_weak_symbol(symbol_type: str) -> bool:
     return (len(symbol_type) > 0) and ("VvWw".find(symbol_type[-1]) >= 0)
 
@@ -136,14 +142,13 @@ def _detect_symbols(filename: str, get_defined: bool) -> Dict[str, str]:
 # Process File
 # ============================================================================
 
-def process_file(filename: str, ignore_weak: bool, cache: Dict[str, Any] = {}, preloaded: Optional[Dict[str, str]] = None) -> Optional[List[Dict]]:
+def process_file_recursive(filename: str, ignore_weak: bool, cache: Dict[str, Any] = {}, preloaded: Optional[Dict[str, str]] = None) -> Optional[List[Dict]]:
     # Check file type
     if not _detect_executable(filename):
         raise ValueError(f"Input file \"{filename}\" is not a supported executable file or shared library!")
 
     # Detect dependencies
-    dependencies = deepcopy(preloaded) if preloaded is not None else {}
-    dependencies.update(_lazy_compute(cache, 'dep', filename, lambda _key: _detect_dependencies(_key)))
+    dependencies = _merge_dict(preloaded, _lazy_compute(cache, 'dep', filename, lambda _key: _detect_dependencies(_key)))
 
     # Detect imported symbols
     imported = _lazy_compute(cache, 'imp', filename, lambda _key: _detect_symbols(_key, False))
@@ -193,6 +198,61 @@ def process_file(filename: str, ignore_weak: bool, cache: Dict[str, Any] = {}, p
 
     return result_list
 
+def process_file(filename: str, cache: Dict[str, Any] = {}, recursive: bool = False, print_types: bool = False, no_preload: bool = False, no_filter: bool = False) -> List[Any]:
+    filename = realpath(normpath(filename))
+    if not (isfile(filename) and os.access(filename, os.R_OK)):
+        raise OSError("File not found or access denied!")
+
+    # Create queue
+    results, files_visited, pending_files, = [], set(), deque([(filename, None)])
+
+    # Process all pending files
+    while True:
+        try:
+            _filename, preloaded = pending_files.popleft()
+        except IndexError:
+            break
+        files_visited.add(_filename)
+        result = process_file_recursive(_filename, not no_filter, cache, preloaded)
+        if result:
+            results.append({ _KEY_FILENAME: _filename, _KEY_DEPENDENCIES: result[0] if len(result) == 1 else result })
+            if recursive:
+                preloaded = _merge_dict(preloaded, { _library[_KEY_SONAME]: _library[_KEY_PATH] for _library in result if _KEY_PATH in _library }) if not no_preload else None
+                pending_files.extend([ (path, preloaded) for path in [ library[_KEY_PATH] for library in result if _KEY_PATH in library ] if not ((path in pending_files) or (path in files_visited)) ])
+
+    # Eradicate symbol types, if requested
+    if not print_types:
+        for result in results:
+            depslist = result[_KEY_DEPENDENCIES]
+            for library in depslist if isinstance(depslist, list) else [depslist]:
+                library[_KEY_SYMBOLS] = [ symbol[_KEY_NAME] for symbol in library[_KEY_SYMBOLS] ]
+
+    return results
+
+# ============================================================================
+# Output
+# ============================================================================
+
+def print_results(results: List[Any], json_format: bool = False, indent: int = 3):
+    # Output the final results
+    if json_format:
+        json.dump(results[0] if len(results) == 1 else results, sys.stdout, indent=(indent if indent > 0 else None))
+        print(file=sys.stdout)
+    else:
+        if len(results) > 0:
+            indent_chars = ('\x20' * indent, '\x20' * (2 * indent)) if indent > 0 else ('\t', '\t\t')
+            for result in results:
+                print(result[_KEY_FILENAME])
+                depslist = result[_KEY_DEPENDENCIES]
+                for library in depslist if isinstance(depslist, list) else [depslist]:
+                    imported_symbols = library[_KEY_SYMBOLS]
+                    print(f"{indent_chars[0]}{library[_KEY_SONAME]} => {library[_KEY_PATH]}" if library[_KEY_SONAME] else f"{indent_chars[0]}unresolved symbols:")
+                    for symbol in imported_symbols:
+                        print(f"{indent_chars[1]}{symbol[_KEY_NAME]} [{symbol[_KEY_TYPE]}]" if isinstance(symbol, dict) else f"{indent_chars[1]}{symbol}")
+            print()
+        else:
+            print("No dependencies have been found!", file=sys.stderr)
+
 # ============================================================================
 # MAIN
 # ============================================================================
@@ -233,68 +293,18 @@ def main() -> int:
             print(f"Required tool \"/usr/bin/{tool}\" is not available or inaccessible!", file=sys.stderr)
             return 1
 
-    # Initialize buffers
-    results, files_visited, pending_files, cache = [], set(), deque(), {}
+    # Initialize the cache
+    cache = {}
 
-    # Check existence of all given input files
+    # Process all given input files
     for filename in args.input:
         try:
-            filename = realpath(normpath(filename))
-            if not (isfile(filename) and os.access(filename, os.R_OK)):
-                raise OSError("File not found or access denied!")
-            pending_files.append((filename, None))
-        except OSError:
-            print(f"Error: Input file \"{filename}\" could not be found or access denied!", file=sys.stderr)
-            if not args.keep_going:
-                return 1
-            else:
-                continue
-
-    # Process all pending files
-    while True:
-        try:
-            filename, preloaded = pending_files.popleft()
-        except IndexError:
-            break
-        files_visited.add(filename)
-        try:
-            result = process_file(filename, not args.no_filter, cache, preloaded)
-            if result:
-                results.append({ _KEY_FILENAME: filename, _KEY_DEPENDENCIES: result[0] if len(result) == 1 else result })
-                if args.recursive:
-                    _preloaded = { _library[_KEY_SONAME]: _library[_KEY_PATH] for _library in result if _KEY_PATH in _library } if not args.no_preload else None
-                    pending_files.extend([ (path, _preloaded) for path in
-                        [ library[_KEY_PATH] for library in result if _KEY_PATH in library ] if not ((path in pending_files) or (path in files_visited)) ])
+            results = process_file(filename, cache, args.recursive, args.print_types, args.no_preload, args.no_filter)
+            print_results(results, args.json_format, args.indent)
         except Exception as e:
             print(f"Error: {str(e)}", file=sys.stderr)
             if not args.keep_going:
                 return 1
-            else:
-                continue
-
-    # Eradicate symbol types, if requested
-    if not args.print_types:
-        for result in results:
-            depslist = result[_KEY_DEPENDENCIES]
-            for library in depslist if isinstance(depslist, list) else [depslist]:
-                library[_KEY_SYMBOLS] = [ symbol[_KEY_NAME] for symbol in library[_KEY_SYMBOLS] ]
-
-    # Output the final results
-    if args.json_format:
-        json.dump(results[0] if len(results) == 1 else results, sys.stdout, indent=(args.indent if args.indent > 0 else None))
-    else:
-        if len(results) > 0:
-            indent_chars = ('\x20' * args.indent, '\x20' * (2 * args.indent)) if args.indent > 0 else ('\t', '\t\t')
-            for result in results:
-                print(result[_KEY_FILENAME])
-                depslist = result[_KEY_DEPENDENCIES]
-                for library in depslist if isinstance(depslist, list) else [depslist]:
-                    imported_symbols = library[_KEY_SYMBOLS]
-                    print(f"{indent_chars[0]}{library[_KEY_SONAME]} => {library[_KEY_PATH]}" if library[_KEY_SONAME] else f"{indent_chars[0]}unresolved symbols:")
-                    for symbol in imported_symbols:
-                        print(f"{indent_chars[1]}{symbol[_KEY_NAME]} [{symbol[_KEY_TYPE]}]" if isinstance(symbol, dict) else f"{indent_chars[1]}{symbol}")
-        else:
-            print("No dependencies have been found!", file=sys.stderr)
 
     return 0
 
