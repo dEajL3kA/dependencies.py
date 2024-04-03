@@ -24,7 +24,7 @@ from typing import Dict, List, Callable, Optional, Any
 # ============================================================================
 
 # Version information
-_VERSION = (1, 2, 1712059272)
+_VERSION = (1, 3, 1712174894)
 
 # Dictionary keys
 _KEY_DEPENDENCIES = 'dependencies'

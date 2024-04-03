@@ -3,8 +3,8 @@ BIN_PATH ?= $(CURDIR)/build
 OUT_PATH ?= $(CURDIR)/dist
 
 PYTHON3 ?= python3
-TAR ?= tar
 PANDOC ?= pandoc
+TAR ?= $(if $(filter %BSD SunOS,$(shell uname -s)),gtar,tar)
 
 SYSCONF_PLATFORM := $(shell $(PYTHON3) -c 'import sysconfig; print(sysconfig.get_platform().casefold())')
 ifeq ($(SYSCONF_PLATFORM),)
@@ -26,4 +26,4 @@ build:
 	XZ_OPT=-9e $(TAR) --owner=0 --group=0 -cJvf "$(OUT_PATH)/dependencies.${SYSCONF_PLATFORM}.tar.xz" dependencies README.html LICENSE.txt
 
 clean:
-	rm -rvf "$(BIN_PATH)" "$(OUT_PATH)"
+	rm -rf "$(BIN_PATH)" "$(OUT_PATH)"
