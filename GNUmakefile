@@ -27,8 +27,13 @@ all: clean build
 
 build:
 	$(PYTHON3) -m venv --clear "$(BIN_PATH)/.pyenv"
-	"$(BIN_PATH)/.pyenv/bin/python3" -m pip install -U pyinstaller
+	"$(BIN_PATH)/.pyenv/bin/python3" -m pip install -U pip wheel pyinstaller
 	"$(BIN_PATH)/.pyenv/bin/python3" -m PyInstaller -Fsy -n dependencies --specpath "$(BIN_PATH)" --workpath "$(BIN_PATH)" --distpath "$(OUT_PATH)" "$(SRC_PATH)/dependencies.py"
+ifneq ($(STATICX),)
+	"$(BIN_PATH)/.pyenv/bin/python3" -m pip install -U staticx
+	"$(BIN_PATH)/.pyenv/bin/python3" -m staticx --strip "$(OUT_PATH)/dependencies" "$(OUT_PATH)/dependencies-static"
+	mv -f "$(OUT_PATH)/dependencies-static" "$(OUT_PATH)/dependencies"
+endif
 	cp -f "$(CURDIR)/LICENSE.txt" "$(OUT_PATH)/LICENSE.txt"
 ifneq ($(PANDOC),)
 	$(PANDOC) -o "$(OUT_PATH)/$(README_FILE)" "$(CURDIR)/README.md"
