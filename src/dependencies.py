@@ -82,7 +82,7 @@ def _detect_dependencies(filename: str) -> Dict[str, str]:
     dependencies, openbsd_compat = {}, sys.platform.startswith('openbsd')
     regex = re.compile(
         r'^\s+([0-9A-Fa-f]+\s+){2}(exe|rlib|dlib|ld\.so)\s+(\d+\s+){3}(.+?)\s*$' if openbsd_compat else
-        r'^\s+([^<>]+?)\s+(=>\s+(.+?))?(\s*\(0x[0-9A-Fa-f]+\))?\s*$')
+        r'^\s+([^<>]+?)(\s+=>\s+(.*?))??(\s*\(0x[0-9A-Fa-f]+\))?\s*$')
     try:
         with _start_process(['/usr/bin/ldd', filename]) as proc:
             for line in io.TextIOWrapper(proc.stdout, encoding="utf-8"):
