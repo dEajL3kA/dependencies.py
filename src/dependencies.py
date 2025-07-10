@@ -40,7 +40,7 @@ _KEY_TYPE = 'type'
 # ============================================================================
 
 def _start_process(args: List[str]) -> subprocess.Popen:
-    return subprocess.Popen(args, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdout=subprocess.PIPE, env={'LC_ALL': 'C.UTF-8', 'LANG': 'C.UTF-8'})
+    return subprocess.Popen(args, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdout=subprocess.PIPE, env=my_env)
 
 def _lazy_compute(cache: Dict, category: str, key: str, factory: Callable[[str], Any]) -> Any:
     cache_entry = json.dumps({ 'category': category, 'name': key }, sort_keys=True, separators=(',', ':'))
@@ -294,6 +294,12 @@ def main() -> int:
 
     # Initialize the cache
     cache = {}
+
+    # Create a modified environment
+    global my_env
+    my_env = os.environ.copy()
+    my_env['LC_ALL'] = 'C.UTF-8'
+    my_env['LANG'] = 'C.UTF-8'
 
     # Process all given input files
     for filename in args.input:
