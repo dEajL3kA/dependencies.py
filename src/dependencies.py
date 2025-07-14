@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ###################################################################################
-# Copyright (c) 2024 "dEajL3kA" <Cumpoing79@web.de>                               #
+# Copyright (c) 2025 "dEajL3kA" <Cumpoing79@web.de>                               #
 # This work has been released under the MIT license. See LICENSE.txt for details! #
 ###################################################################################
 
@@ -24,7 +24,7 @@ from typing import Dict, List, Callable, Optional, Any
 # ============================================================================
 
 # Version information
-_VERSION = (1, 3, 1712225082)
+_VERSION = (1, 3, 1752509048)
 
 # Dictionary keys
 _KEY_DEPENDENCIES = 'dependencies'
@@ -39,8 +39,15 @@ _KEY_TYPE = 'type'
 # Functions
 # ============================================================================
 
+def _make_environment() -> dict:
+    environment = { 'LC_ALL': 'C.UTF-8', 'LANG': 'C.UTF-8' }
+    ld_library_path = os.getenv('LD_LIBRARY_PATH')
+    if ld_library_path:
+        environment['LD_LIBRARY_PATH'] = ld_library_path
+    return environment
+
 def _start_process(args: List[str]) -> subprocess.Popen:
-    return subprocess.Popen(args, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdout=subprocess.PIPE, env={'LC_ALL': 'C.UTF-8', 'LANG': 'C.UTF-8'})
+    return subprocess.Popen(args, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdout=subprocess.PIPE, env=_make_environment())
 
 def _lazy_compute(cache: Dict, category: str, key: str, factory: Callable[[str], Any]) -> Any:
     cache_entry = json.dumps({ 'category': category, 'name': key }, sort_keys=True, separators=(',', ':'))
